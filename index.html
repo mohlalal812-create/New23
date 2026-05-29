@@ -26,8 +26,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 .main-content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 
 /* Screens */
-.screen-chats, .screen-chat, .screen-updates, .screen-calls, .screen-settings, .screen-profile, .screen-help, .screen-account, .screen-privacy, .screen-chats-settings, .screen-notifications, .screen-storage, .screen-contact-info, .screen-new-chat { display: none; flex-direction: column; height: 100%; width: 100%; }
-.screen-chats.show, .screen-chat.show, .screen-updates.show, .screen-calls.show, .screen-settings.show, .screen-profile.show, .screen-help.show, .screen-account.show, .screen-privacy.show, .screen-chats-settings.show, .screen-notifications.show, .screen-storage.show, .screen-contact-info.show, .screen-new-chat.show { display: flex; }
+.screen-chats, .screen-chat, .screen-updates, .screen-calls, .screen-settings, .screen-profile, .screen-help, .screen-account, .screen-privacy, .screen-chats-settings, .screen-notifications, .screen-contact-info, .screen-new-chat { display: none; flex-direction: column; height: 100%; width: 100%; }
+.screen-chats.show, .screen-chat.show, .screen-updates.show, .screen-calls.show, .screen-settings.show, .screen-profile.show, .screen-help.show, .screen-account.show, .screen-privacy.show, .screen-chats-settings.show, .screen-notifications.show, .screen-contact-info.show, .screen-new-chat.show { display: flex; }
 
 /* Headers */
 .header, .chat-header, .profile-header, .sub-header { padding: 16px; background: var(--header-bg); display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
@@ -189,7 +189,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
     <div class="input-area"><textarea class="message-input" id="messageInput" rows="1" placeholder="Type a message..."></textarea><button class="send-btn" id="sendBtn">➤</button></div>
   </div>
 
-  <!-- UPDATES, CALLS, SETTINGS, ACCOUNT, PRIVACY, CHATS SETTINGS, NOTIFICATIONS, HELP, CONTACT INFO screens (simplified - same as your original but working) -->
+  <!-- UPDATES, CALLS, SETTINGS, ACCOUNT, PRIVACY, CHATS SETTINGS, NOTIFICATIONS, HELP, CONTACT INFO -->
   <div class="screen-updates" id="screenUpdates"><div class="header"><div class="logo"><h1>UPDATES</h1><span>STATUS</span></div><div style="width:44px"></div></div><button class="add-status-btn" id="openStatusBtn">➕ Add Status Update</button><div class="status-list" id="statusList"></div></div>
   <div class="screen-calls" id="screenCalls"><div class="header"><div class="logo"><h1>CALLS</h1><span>HISTORY</span></div><div style="width:44px"></div></div><div class="call-list" id="callList"><div style="text-align:center;padding:40px;color:var(--text-muted)">Call history will appear here</div></div></div>
   <div class="screen-settings" id="screenSettings"><div class="sub-header"><button class="back-btn" id="settingsBackBtn">←</button><span class="sub-header-title">Settings</span></div><div class="settings-body" id="settingsBody"></div></div>
@@ -221,9 +221,8 @@ const db = firebase.database();
 let currentUid = null;
 let currentChatId = null;
 let currentChatUser = null;
-let currentChatListenerRef = null;
+let currentMessagesRef = null;
 let allUsers = [];
-let userChats = {};
 
 let S = { theme: 'light', wallpaper: '#f5f5f5', bubbleColor: '#DCF8C6', fontSize: '14px', enterToSend: false, readReceipts: true, onlineStatus: true, notif: true, sound: true };
 
@@ -232,22 +231,22 @@ function applyAllSettings() {
   document.documentElement.style.setProperty('--chat-wallpaper', S.wallpaper);
   document.documentElement.style.setProperty('--sent-msg', S.bubbleColor);
   document.documentElement.style.setProperty('--msg-font-size', S.fontSize);
-  document.getElementById('readReceiptsToggle')?.classList.toggle('on', S.readReceipts);
-  document.getElementById('onlineStatusToggle')?.classList.toggle('on', S.onlineStatus);
-  document.getElementById('enterToSendToggle')?.classList.toggle('on', S.enterToSend);
-  document.getElementById('notifToggle')?.classList.toggle('on', S.notif);
-  document.getElementById('soundToggle')?.classList.toggle('on', S.sound);
+  const toggles = ['readReceiptsToggle', 'onlineStatusToggle', 'enterToSendToggle', 'notifToggle', 'soundToggle'];
+  toggles.forEach(id => { const el = document.getElementById(id); if(el) el.classList.toggle('on', S[id.replace('Toggle','')]); });
 }
 function saveSettings() { if(currentUid) localStorage.setItem('justus_settings_'+currentUid, JSON.stringify(S)); }
 function showScreen(screen) {
   document.querySelectorAll('[class*="screen-"]').forEach(s => s.classList.remove('show'));
-  document.getElementById('screen'+screen.charAt(0).toUpperCase()+screen.slice(1))?.classList.add('show');
+  const screenMap = { chats:'screenChats', chat:'screenChat', updates:'screenUpdates', calls:'screenCalls', settings:'screenSettings', account:'screenAccount', privacy:'screenPrivacy', chatsSettings:'screenChatsSettings', notifications:'screenNotifications', help:'screenHelp', contactInfo:'screenContactInfo', newChat:'screenNewChat' };
+  document.getElementById(screenMap[screen])?.classList.add('show');
   const fab = document.getElementById('fabWrapper');
   if(fab) fab.classList.toggle('hide', !['chats','updates','calls'].includes(screen));
   if(screen === 'updates') loadStatuses();
+  if(screen === 'newChat') loadAllUsers();
 }
 
 function getChatId(uid1, uid2) { return [uid1, uid2].sort().join('_'); }
+function escapeHtml(str) { if(!str) return ''; return str.replace(/[&<>]/g, function(m){ if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
 
 // Authentication
 auth.onAuthStateChanged(async user => {
@@ -255,8 +254,7 @@ auth.onAuthStateChanged(async user => {
     currentUid = user.uid;
     await loadUserProfile();
     document.getElementById('screenLogin').classList.add('hide');
-    loadAllUsers();
-    loadUserChats();
+    loadChatsList();
     loadStatuses();
     showScreen('chats');
   } else {
@@ -267,18 +265,23 @@ auth.onAuthStateChanged(async user => {
 
 async function loadUserProfile() {
   const snap = await db.ref('users/'+currentUid).once('value');
-  const profile = snap.val();
-  if(profile) {
-    S.username = profile.name;
-    S.avatarEmoji = profile.avatar || profile.name?.charAt(0).toUpperCase() || '👤';
-    const saved = localStorage.getItem('justus_settings_'+currentUid);
-    if(saved) Object.assign(S, JSON.parse(saved));
-    applyAllSettings();
-    document.getElementById('accountAvatar').textContent = S.avatarEmoji;
-    document.getElementById('headerSubtitle').textContent = '👋 '+S.username;
-    document.getElementById('accountNameInput').value = S.username;
-    document.getElementById('accountAboutInput').value = profile.about || 'Hey there!';
+  let profile = snap.val();
+  if(!profile) {
+    // Create profile if doesn't exist
+    const email = auth.currentUser.email;
+    const username = email.replace('@justus.app', '');
+    profile = { username, name: username, avatar: username.charAt(0).toUpperCase(), about: 'Hey there! I am using JUSTUS.', online: true };
+    await db.ref('users/'+currentUid).set(profile);
   }
+  S.username = profile.name;
+  S.avatarEmoji = profile.avatar || profile.name?.charAt(0).toUpperCase() || '👤';
+  const saved = localStorage.getItem('justus_settings_'+currentUid);
+  if(saved) Object.assign(S, JSON.parse(saved));
+  applyAllSettings();
+  document.getElementById('accountAvatar').textContent = S.avatarEmoji;
+  document.getElementById('headerSubtitle').textContent = '👋 '+S.username;
+  document.getElementById('accountNameInput').value = S.username;
+  document.getElementById('accountAboutInput').value = profile.about || 'Hey there!';
   db.ref('users/'+currentUid+'/online').set(true);
   db.ref('users/'+currentUid+'/online').onDisconnect().set(false);
 }
@@ -309,49 +312,30 @@ function logoutUser() {
   if(confirm('Log out?')) { if(currentUid) db.ref('users/'+currentUid+'/online').set(false); auth.signOut(); }
 }
 
-// Load all users for new chat
-async function loadAllUsers() {
-  const snap = await db.ref('users').once('value');
-  const users = snap.val() || {};
-  allUsers = Object.entries(users).filter(([uid]) => uid !== currentUid).map(([uid, user]) => ({ uid, name: user.name, avatar: user.avatar || user.name?.charAt(0).toUpperCase() || '👤' }));
-  renderAllUsersList();
-}
-
-function renderAllUsersList() {
-  const container = document.getElementById('allUsersList');
-  if(!container) return;
-  if(allUsers.length === 0) { container.innerHTML = '<div style="padding:20px;text-align:center">No other users found</div>'; return; }
-  container.innerHTML = allUsers.map(user => `<div class="new-chat-user" data-uid="${user.uid}" data-name="${user.name}" data-avatar="${user.avatar}"><div class="chat-avatar-img" style="width:45px;height:45px;">${user.avatar}</div><div style="flex:1"><strong>${user.name}</strong></div></div>`).join('');
-  document.querySelectorAll('.new-chat-user').forEach(el => {
-    el.addEventListener('click', () => { startNewChat(el.dataset.uid, el.dataset.name, el.dataset.avatar); });
-  });
-}
-
-function startNewChat(uid, name, avatar) {
-  const chatId = getChatId(currentUid, uid);
-  currentChatId = chatId;
-  currentChatUser = { uid, name, avatar };
-  openChat(chatId, uid, name, avatar);
-}
-
-// Load user's existing chats
-function loadUserChats() {
-  db.ref('chats').on('value', snap => {
+// Load chats list
+function loadChatsList() {
+  db.ref('chats').on('value', async (snap) => {
     const allChats = snap.val() || {};
     const myChats = [];
-    Object.entries(allChats).forEach(([chatId, chatData]) => {
+    for (const [chatId, chatData] of Object.entries(allChats)) {
       if(chatId.includes(currentUid)) {
         const otherUid = chatId.replace(currentUid, '').replace('_', '');
-        db.ref('users/'+otherUid).once('value').then(userSnap => {
-          const user = userSnap.val();
-          if(user) {
-            myChats.push({ id: chatId, uid: otherUid, name: user.name, avatar: user.avatar || user.name?.charAt(0).toUpperCase() || '👤', lastMessage: chatData.lastMessage || 'Tap to chat', time: chatData.lastTime || '' });
-          }
-          renderChatList(myChats);
-        });
+        const userSnap = await db.ref('users/'+otherUid).once('value');
+        const user = userSnap.val();
+        if(user) {
+          myChats.push({
+            id: chatId,
+            uid: otherUid,
+            name: user.name,
+            avatar: user.avatar || user.name?.charAt(0).toUpperCase() || '👤',
+            lastMessage: chatData.lastMessage || 'No messages yet',
+            lastTime: chatData.lastTime || ''
+          });
+        }
       }
-    });
-    setTimeout(() => { if(myChats.length === 0) renderChatList([]); }, 500);
+    }
+    myChats.sort((a,b) => (b.lastTime || '').localeCompare(a.lastTime || ''));
+    renderChatList(myChats);
   });
 }
 
@@ -359,12 +343,12 @@ function renderChatList(chats) {
   const container = document.getElementById('chatList');
   if(!container) return;
   if(!chats.length) { container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)">No chats yet. Tap + or menu to start a chat</div>'; return; }
-  container.innerHTML = chats.map(chat => `<div class="chat-item" data-id="${chat.id}" data-uid="${chat.uid}" data-name="${chat.name}" data-avatar="${chat.avatar}"><div class="chat-avatar-img">${chat.avatar}</div><div class="chat-info"><div class="chat-name">${chat.name}</div><div class="chat-preview">${chat.lastMessage}</div></div><div class="chat-meta"><div class="chat-time">${chat.time}</div></div></div>`).join('');
+  container.innerHTML = chats.map(chat => `<div class="chat-item" data-id="${chat.id}" data-uid="${chat.uid}" data-name="${escapeHtml(chat.name)}" data-avatar="${chat.avatar}"><div class="chat-avatar-img">${chat.avatar}</div><div class="chat-info"><div class="chat-name">${escapeHtml(chat.name)}</div><div class="chat-preview">${escapeHtml(chat.lastMessage)}</div></div><div class="chat-meta"><div class="chat-time">${chat.lastTime}</div></div></div>`).join('');
   document.querySelectorAll('.chat-item').forEach(item => {
     item.addEventListener('click', () => { openChat(item.dataset.id, item.dataset.uid, item.dataset.name, item.dataset.avatar); });
-    let timer; let isLongPress = false;
-    item.addEventListener('touchstart', () => { timer = setTimeout(() => { isLongPress = true; showDeletePopup(item.dataset.id, item.dataset.name); }, 500); });
-    item.addEventListener('touchend', () => { clearTimeout(timer); setTimeout(() => { isLongPress = false; }, 100); });
+    let timer;
+    item.addEventListener('touchstart', () => { timer = setTimeout(() => showDeletePopup(item.dataset.id, item.dataset.name), 500); });
+    item.addEventListener('touchend', () => { clearTimeout(timer); });
     item.addEventListener('contextmenu', (e) => { e.preventDefault(); showDeletePopup(item.dataset.id, item.dataset.name); });
   });
 }
@@ -372,28 +356,53 @@ function renderChatList(chats) {
 function showDeletePopup(chatId, chatName) {
   document.getElementById('deletePopupName').textContent = chatName;
   const confirmBtn = document.getElementById('deleteConfirmBtn');
-  const oldHandler = confirmBtn.onclick;
   confirmBtn.onclick = () => {
     db.ref('chats/'+chatId).remove();
     document.getElementById('deletePopup').classList.remove('open');
     document.getElementById('overlay').classList.remove('show');
-    loadUserChats();
-    showScreen('chats');
+    if(currentChatId === chatId) showScreen('chats');
   };
   document.getElementById('deletePopup').classList.add('open');
   document.getElementById('overlay').classList.add('show');
 }
 
+// Load all users for new chat
+async function loadAllUsers() {
+  const snap = await db.ref('users').once('value');
+  const users = snap.val() || {};
+  allUsers = Object.entries(users).filter(([uid]) => uid !== currentUid).map(([uid, user]) => ({ uid, name: user.name, avatar: user.avatar || user.name?.charAt(0).toUpperCase() || '👤' }));
+  const container = document.getElementById('allUsersList');
+  if(!container) return;
+  if(allUsers.length === 0) { container.innerHTML = '<div style="padding:20px;text-align:center">No other users found</div>'; return; }
+  container.innerHTML = allUsers.map(user => `<div class="new-chat-user" data-uid="${user.uid}" data-name="${escapeHtml(user.name)}" data-avatar="${user.avatar}"><div class="chat-avatar-img" style="width:45px;height:45px;">${user.avatar}</div><div style="flex:1"><strong>${escapeHtml(user.name)}</strong></div></div>`).join('');
+  document.querySelectorAll('.new-chat-user').forEach(el => {
+    el.addEventListener('click', () => { startNewChat(el.dataset.uid, el.dataset.name, el.dataset.avatar); });
+  });
+}
+
+function startNewChat(uid, name, avatar) {
+  const chatId = getChatId(currentUid, uid);
+  openChat(chatId, uid, name, avatar);
+}
+
 function openChat(chatId, otherUid, name, avatar) {
-  if(currentChatListenerRef) { db.ref('chats/'+currentChatId+'/messages').off(); }
+  // Clean up previous listener
+  if(currentMessagesRef) {
+    db.ref('chats/'+currentChatId+'/messages').off();
+  }
   currentChatId = chatId;
   currentChatUser = { uid: otherUid, name, avatar };
   document.getElementById('chatName').textContent = name;
   document.getElementById('chatAvatar').textContent = avatar;
+  
   const messagesArea = document.getElementById('messagesArea');
   messagesArea.innerHTML = '';
-  db.ref('chats/'+chatId+'/messages').on('child_added', snap => {
+  
+  // Load messages
+  currentMessagesRef = db.ref('chats/'+chatId+'/messages');
+  currentMessagesRef.orderByChild('timestamp').on('child_added', (snap) => {
     const msg = snap.val();
+    if(!msg) return;
     const isSent = msg.sender === currentUid;
     const div = document.createElement('div');
     div.className = 'message '+(isSent ? 'sent' : 'received');
@@ -401,7 +410,7 @@ function openChat(chatId, otherUid, name, avatar) {
     messagesArea.appendChild(div);
     messagesArea.scrollTop = messagesArea.scrollHeight;
   });
-  currentChatListenerRef = chatId;
+  
   showScreen('chat');
 }
 
@@ -410,13 +419,14 @@ function sendMessage() {
   const text = input.value.trim();
   if(!text || !currentUid || !currentChatId || !currentChatUser) return;
   const timeStr = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  const timestamp = firebase.database.ServerValue.TIMESTAMP;
   const messageRef = db.ref('chats/'+currentChatId+'/messages').push();
-  messageRef.set({ text, sender: currentUid, timeStr, timestamp: firebase.database.ServerValue.TIMESTAMP });
+  messageRef.set({ text, sender: currentUid, timeStr, timestamp });
   db.ref('chats/'+currentChatId).update({ lastMessage: text, lastTime: timeStr });
   input.value = '';
+  // Auto-resize textarea
+  input.style.height = 'auto';
 }
-
-function escapeHtml(str) { return str.replace(/[&<>]/g, function(m){ if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
 
 // Status functions
 function loadStatuses() {
@@ -481,40 +491,35 @@ document.getElementById('accountSaveBtn')?.addEventListener('click', () => {
 document.getElementById('accountAvatar')?.addEventListener('click', () => document.getElementById('emojiPicker')?.classList.toggle('show'));
 document.querySelectorAll('.emoji-opt')?.forEach(opt => { opt.addEventListener('click', () => { S.avatarEmoji = opt.textContent; document.getElementById('accountAvatar').textContent = S.avatarEmoji; if(currentUid) db.ref('users/'+currentUid+'/avatar').set(S.avatarEmoji); document.getElementById('emojiPicker').classList.remove('show'); }); });
 
-// Toggles
-document.getElementById('readReceiptsToggle')?.addEventListener('click', () => { S.readReceipts = !S.readReceipts; document.getElementById('readReceiptsToggle').classList.toggle('on', S.readReceipts); saveSettings(); });
-document.getElementById('onlineStatusToggle')?.addEventListener('click', () => { S.onlineStatus = !S.onlineStatus; document.getElementById('onlineStatusToggle').classList.toggle('on', S.onlineStatus); saveSettings(); });
-document.getElementById('enterToSendToggle')?.addEventListener('click', () => { S.enterToSend = !S.enterToSend; document.getElementById('enterToSendToggle').classList.toggle('on', S.enterToSend); saveSettings(); });
-document.getElementById('notifToggle')?.addEventListener('click', () => { S.notif = !S.notif; document.getElementById('notifToggle').classList.toggle('on', S.notif); saveSettings(); });
-document.getElementById('soundToggle')?.addEventListener('click', () => { S.sound = !S.sound; document.getElementById('soundToggle').classList.toggle('on', S.sound); saveSettings(); });
+// Toggle listeners
+const toggleListeners = [
+  { id: 'readReceiptsToggle', key: 'readReceipts' },
+  { id: 'onlineStatusToggle', key: 'onlineStatus' },
+  { id: 'enterToSendToggle', key: 'enterToSend' },
+  { id: 'notifToggle', key: 'notif' },
+  { id: 'soundToggle', key: 'sound' }
+];
+toggleListeners.forEach(t => {
+  document.getElementById(t.id)?.addEventListener('click', () => { S[t.key] = !S[t.key]; document.getElementById(t.id).classList.toggle('on', S[t.key]); saveSettings(); });
+});
 
 // Swatches
 document.querySelectorAll('#wallpaperSwatches .swatch')?.forEach(s => { s.addEventListener('click', () => { S.wallpaper = s.dataset.val; applyAllSettings(); saveSettings(); }); });
 document.querySelectorAll('#bubbleSwatches .swatch')?.forEach(s => { s.addEventListener('click', () => { S.bubbleColor = s.dataset.val; applyAllSettings(); saveSettings(); }); });
-document.querySelectorAll('.font-size-btn')?.forEach(btn => { btn.addEventListener('click', () => { S.fontSize = btn.dataset.size; applyAllSettings(); saveSettings(); }); });
+document.querySelectorAll('.font-size-btn')?.forEach(btn => { btn.addEventListener('click', () => { S.fontSize = btn.dataset.size; applyAllSettings(); saveSettings(); document.querySelectorAll('.font-size-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); }); });
 
 // Menus
 document.getElementById('menuBtn')?.addEventListener('click', e => { e.stopPropagation(); document.getElementById('dropdownMenu')?.classList.toggle('show'); });
 document.addEventListener('click', () => document.getElementById('dropdownMenu')?.classList.remove('show'));
-document.getElementById('menuNewChat')?.addEventListener('click', () => { showScreen('newChat'); loadAllUsers(); });
+document.getElementById('menuNewChat')?.addEventListener('click', () => { showScreen('newChat'); });
 document.getElementById('menuSettings')?.addEventListener('click', () => showScreen('settings'));
 document.getElementById('menuHelp')?.addEventListener('click', () => showScreen('help'));
 document.getElementById('menuInvite')?.addEventListener('click', () => alert('Share this app link!'));
 document.getElementById('menuLogout')?.addEventListener('click', logoutUser);
 document.getElementById('chatMenuBtn')?.addEventListener('click', e => { e.stopPropagation(); document.getElementById('chatDropdown')?.classList.toggle('show'); });
-document.getElementById('chatMenuInfo')?.addEventListener('click', () => { if(currentChatUser) openContactInfo(currentChatUser.uid, currentChatUser.name, currentChatUser.avatar); document.getElementById('chatDropdown')?.classList.remove('show'); });
+document.getElementById('chatMenuInfo')?.addEventListener('click', async () => { if(currentChatUser) { const snap = await db.ref('users/'+currentChatUser.uid).once('value'); const profile = snap.val(); document.getElementById('contactInfoAvatar').textContent = currentChatUser.avatar; document.getElementById('contactInfoName').textContent = currentChatUser.name; document.getElementById('contactInfoStatus').textContent = profile?.online ? 'Online' : 'Offline'; document.getElementById('contactInfoAbout').textContent = profile?.about || 'Hey there!'; showScreen('contactInfo'); } document.getElementById('chatDropdown')?.classList.remove('show'); });
 document.getElementById('chatMenuDelete')?.addEventListener('click', () => { if(currentChatId && currentChatUser) showDeletePopup(currentChatId, currentChatUser.name); document.getElementById('chatDropdown')?.classList.remove('show'); });
 document.getElementById('chatMenuStatus')?.addEventListener('click', () => { document.getElementById('statusModal').classList.add('open'); document.getElementById('overlay').classList.add('show'); document.getElementById('chatDropdown')?.classList.remove('show'); });
-
-async function openContactInfo(uid, name, avatar) {
-  const snap = await db.ref('users/'+uid).once('value');
-  const profile = snap.val();
-  document.getElementById('contactInfoAvatar').textContent = avatar || '👤';
-  document.getElementById('contactInfoName').textContent = name;
-  document.getElementById('contactInfoStatus').textContent = profile?.online ? 'Online' : 'Offline';
-  document.getElementById('contactInfoAbout').textContent = profile?.about || 'Hey there!';
-  showScreen('contactInfo');
-}
 
 // FAB
 let fabOpen = false;
@@ -528,6 +533,12 @@ document.getElementById('tabLogin')?.addEventListener('click', () => { document.
 document.getElementById('tabSignup')?.addEventListener('click', () => { document.getElementById('tabSignup').classList.add('active'); document.getElementById('tabLogin').classList.remove('active'); document.getElementById('signupForm').style.display = 'block'; document.getElementById('loginForm').style.display = 'none'; });
 document.getElementById('loginBtn')?.addEventListener('click', async () => { const u = document.getElementById('loginUsername').value.trim(); const p = document.getElementById('loginPassword').value; if(!u||!p) { document.getElementById('loginError').textContent = 'Please enter username and password'; return; } document.getElementById('loginBtn').textContent = 'Logging in...'; const err = await loginUser(u,p); document.getElementById('loginBtn').textContent = 'Log In'; if(err) document.getElementById('loginError').textContent = err; else document.getElementById('loginError').textContent = ''; });
 document.getElementById('signupBtn')?.addEventListener('click', async () => { const n = document.getElementById('signupName').value; const u = document.getElementById('signupUsername').value.trim().toLowerCase(); const p = document.getElementById('signupPassword').value; if(!n||!u||!p) { document.getElementById('signupError').textContent = 'Please fill all fields'; return; } document.getElementById('signupBtn').textContent = 'Creating...'; const err = await signupUser(n,u,p); document.getElementById('signupBtn').textContent = 'Create Account'; if(err) document.getElementById('signupError').textContent = err; else document.getElementById('signupError').textContent = ''; });
+
+// Auto-resize textarea
+const msgInput = document.getElementById('messageInput');
+if(msgInput) {
+  msgInput.addEventListener('input', function() { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 100) + 'px'; });
+}
 </script>
 </body>
 </html>
