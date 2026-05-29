@@ -22,12 +22,6 @@
   --shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   background: var(--bg-light);
@@ -35,7 +29,7 @@ body {
   overflow: hidden;
 }
 
-/* App Container - Desktop style layout */
+/* App Container */
 .app-container {
   display: flex;
   height: 100vh;
@@ -552,10 +546,6 @@ body {
   .message {
     max-width: 85%;
   }
-  
-  .chat-header-title h2 {
-    font-size: 16px;
-  }
 }
 
 /* Hide/Show screens */
@@ -684,7 +674,7 @@ body {
         <div class="nav-item active" data-nav="chats">
           <span class="nav-icon">💬</span>
           <span class="nav-label">Chats</span>
-          <span class="nav-badge" id="chatsBadge">3</span>
+          <span class="nav-badge" id="chatsBadge">0</span>
         </div>
         <div class="nav-item" data-nav="groups">
           <span class="nav-icon">👥</span>
@@ -728,7 +718,7 @@ body {
           </div>
         </div>
         <div class="chat-list-container" id="chatListContainer">
-          <!-- Chats will be loaded here -->
+          <div style="text-align:center;padding:40px;color:#8696a0;">Loading chats...</div>
         </div>
       </div>
 
@@ -797,7 +787,7 @@ body {
   </div>
 </div>
 
-<!-- Chat View (when a chat is opened) -->
+<!-- Chat View -->
 <div class="screen-chat-view" id="chatView">
   <div class="chat-header">
     <div class="chat-header-left">
@@ -841,6 +831,7 @@ body {
 </div>
 
 <script>
+// Firebase Configuration
 const firebaseConfig = {
   apiKey: "AIzaSyDUHVeaHIMRS8GxkFNEjVSXfUeKr_mQnp0",
   authDomain: "just-you-n-i.firebaseapp.com",
@@ -850,48 +841,79 @@ const firebaseConfig = {
   messagingSenderId: "340669970156",
   appId: "1:340669970156:web:8d9e0db1c1bd08e99e17c9"
 };
+
+// Initialize Firebase
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
 
+// Global state
 let currentUid = null;
 let currentUser = null;
 let currentChatId = null;
 let currentChatUser = null;
 let currentMessagesListener = null;
+let allFirebaseUsers = [];
 
-// Sample chat data structure matching your image
-const sampleChats = [
-  { id: 'chat1', name: 'Lobogang', avatar: 'L', lastMessage: 'See you at 3pm today.', time: '12:45', unread: 2, section: 'today', favorite: true, group: false },
-  { id: 'chat2', name: 'Family Group', avatar: '👨‍👩‍👧', lastMessage: 'Mom: Don\'t forget dinner', time: '11:30', unread: 5, section: 'today', favorite: true, group: true },
-  { id: 'chat3', name: 'Tshepo', avatar: 'T', lastMessage: 'Thanks, got it!', time: '10:18', unread: 1, section: 'today', favorite: true, group: false },
-  { id: 'chat4', name: 'Design Team', avatar: '🎨', lastMessage: 'You: Shared a file', time: '09:42', unread: 1, section: 'today', favorite: true, group: true },
-  { id: 'chat5', name: 'Nandi', avatar: 'N', lastMessage: 'Okay, talk to you soon', time: 'Yesterday', unread: 1, section: 'yesterday', favorite: true, group: false },
-  { id: 'chat6', name: 'Project Update', avatar: '📊', lastMessage: 'Kabelo: The report is ready', time: 'Yesterday', unread: 1, section: 'yesterday', favorite: true, group: true },
-  { id: 'chat7', name: 'Karabo', avatar: 'K', lastMessage: 'Photo', time: 'Mon', unread: 1, section: 'mon', favorite: true, group: false },
-  { id: 'chat8', name: 'Announcements', avatar: '📢', lastMessage: 'System maintenance on Friday', time: 'Mon', unread: 1, section: 'mon', favorite: true, group: true }
-];
+// Helper functions
+function escapeHtml(str) { 
+  if(!str) return ''; 
+  return str.replace(/[&<>]/g, function(m){ 
+    if(m==='&') return '&amp;'; 
+    if(m==='<') return '&lt;'; 
+    if(m==='>') return '&gt;'; 
+    return m;
+  }); 
+}
 
-const sections = { 'today': 'Today', 'yesterday': 'Yesterday', 'mon': 'Mon' };
+function getChatId(uid1, uid2) { 
+  return [uid1, uid2].sort().join('_'); 
+}
 
-function escapeHtml(str) { if(!str) return ''; return str.replace(/[&<>]/g, function(m){ if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
+function formatTime(timestamp) {
+  if(!timestamp) return '';
+  const date = new Date(timestamp);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  
+  if(date >= today) return date.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  if(date >= yesterday) return 'Yesterday';
+  return date.toLocaleDateString([], {month:'short', day:'numeric'});
+}
 
-function renderChatList(chats, containerId, isGroup = false) {
-  const container = document.getElementById(containerId);
+function getSection(timeStr) {
+  if(!timeStr) return 'other';
+  if(timeStr.includes(':')) return 'today';
+  if(timeStr === 'Yesterday') return 'yesterday';
+  return 'other';
+}
+
+// Render chat list from Firebase
+function renderChatListFromFirebase(chats) {
+  const container = document.getElementById('chatListContainer');
   if(!container) return;
   
-  const grouped = {};
+  if(!chats || chats.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:#8696a0;">No chats yet. Start a new chat!</div>';
+    return;
+  }
+  
+  const grouped = { today: [], yesterday: [], other: [] };
   chats.forEach(chat => {
-    if(!grouped[chat.section]) grouped[chat.section] = [];
-    grouped[chat.section].push(chat);
+    const section = getSection(chat.time);
+    grouped[section].push(chat);
   });
   
+  const sectionNames = { today: 'Today', yesterday: 'Yesterday', other: 'Earlier' };
   let html = '';
   for(const [section, chatsInSection] of Object.entries(grouped)) {
-    html += `<div class="chat-section"><div class="section-header">${sections[section] || section}</div>`;
+    if(chatsInSection.length === 0) continue;
+    html += `<div class="chat-section"><div class="section-header">${sectionNames[section]}</div>`;
     chatsInSection.forEach(chat => {
       html += `
-        <div class="chat-item" data-chat-id="${chat.id}" data-chat-name="${escapeHtml(chat.name)}" data-chat-avatar="${escapeHtml(chat.avatar)}">
+        <div class="chat-item" data-chat-id="${chat.id}" data-chat-name="${escapeHtml(chat.name)}" data-chat-avatar="${escapeHtml(chat.avatar)}" data-chat-uid="${chat.uid}">
           <div class="chat-avatar">${chat.avatar}</div>
           <div class="chat-info">
             <div class="chat-name-row">
@@ -908,34 +930,163 @@ function renderChatList(chats, containerId, isGroup = false) {
   }
   container.innerHTML = html;
   
-  document.querySelectorAll(`#${containerId} .chat-item`).forEach(item => {
+  // Add click handlers
+  document.querySelectorAll('#chatListContainer .chat-item').forEach(item => {
     item.addEventListener('click', () => {
       const chatId = item.dataset.chatId;
       const name = item.dataset.chatName;
       const avatar = item.dataset.chatAvatar;
-      openChat(chatId, name, avatar);
+      const uid = item.dataset.chatUid;
+      openChat(chatId, name, avatar, uid);
     });
   });
 }
 
-function renderGroups() {
-  const groups = sampleChats.filter(c => c.group);
-  renderChatList(groups, 'groupsListContainer', true);
+// Load user's chats from Firebase
+function loadUserChats() {
+  if(!currentUid) return;
+  
+  db.ref('chats').on('value', async (snap) => {
+    const allChats = snap.val() || {};
+    const myChats = [];
+    
+    for(const [chatId, chatData] of Object.entries(allChats)) {
+      if(chatId.includes(currentUid)) {
+        const otherUid = chatId.replace(currentUid, '').replace('_', '');
+        const userSnap = await db.ref('users/'+otherUid).once('value');
+        const user = userSnap.val();
+        if(user) {
+          myChats.push({
+            id: chatId,
+            uid: otherUid,
+            name: user.name,
+            avatar: user.avatar || user.name?.charAt(0).toUpperCase() || '👤',
+            lastMessage: chatData.lastMessage || 'No messages yet',
+            time: chatData.lastTime || '',
+            unread: 0
+          });
+        }
+      }
+    }
+    myChats.sort((a,b) => (b.time || '').localeCompare(a.time || ''));
+    renderChatListFromFirebase(myChats);
+    document.getElementById('chatsBadge').textContent = myChats.length;
+  });
 }
 
-function renderFavorites() {
-  const favs = sampleChats.filter(c => c.favorite);
-  renderChatList(favs, 'favoritesListContainer');
+// Load all users for new chat
+async function loadAllUsers() {
+  const snap = await db.ref('users').once('value');
+  const users = snap.val() || {};
+  allFirebaseUsers = Object.entries(users).filter(([uid]) => uid !== currentUid).map(([uid, user]) => ({ 
+    uid, 
+    name: user.name, 
+    avatar: user.avatar || user.name?.charAt(0).toUpperCase() || '👤' 
+  }));
+  
+  const usersList = document.getElementById('usersListForNewChat');
+  if(allFirebaseUsers.length === 0) {
+    usersList.innerHTML = '<div style="padding:20px;text-align:center;">No other users found</div>';
+    return;
+  }
+  usersList.innerHTML = allFirebaseUsers.map(user => `
+    <div class="chat-item" data-uid="${user.uid}" data-name="${escapeHtml(user.name)}" data-avatar="${user.avatar}">
+      <div class="chat-avatar" style="width: 45px; height: 45px;">${user.avatar}</div>
+      <div class="chat-info"><div class="chat-name">${escapeHtml(user.name)}</div></div>
+    </div>
+  `).join('');
+  
+  document.querySelectorAll('#usersListForNewChat .chat-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const uid = item.dataset.uid;
+      const name = item.dataset.name;
+      const avatar = item.dataset.avatar;
+      startNewChat(uid, name, avatar);
+      document.getElementById('newChatModal').style.transform = 'translateY(100%)';
+      document.getElementById('newChatOverlay').classList.remove('show');
+    });
+  });
+}
+
+function startNewChat(uid, name, avatar) {
+  const chatId = getChatId(currentUid, uid);
+  openChat(chatId, name, avatar, uid);
+}
+
+function openChat(chatId, name, avatar, otherUid) {
+  // Clean up previous listener
+  if(currentMessagesListener) {
+    currentMessagesListener.off();
+  }
+  
+  document.getElementById('mainApp').style.display = 'none';
+  document.getElementById('chatView').style.display = 'flex';
+  document.getElementById('chatViewName').textContent = name;
+  document.getElementById('chatViewAvatar').textContent = avatar;
+  currentChatId = chatId;
+  currentChatUser = { uid: otherUid, name, avatar };
+  
+  // Load messages
+  const container = document.getElementById('chatMessagesContainer');
+  container.innerHTML = '<div style="text-align:center;padding:20px;">Loading messages...</div>';
+  
+  currentMessagesListener = db.ref('chats/'+chatId+'/messages').orderByChild('timestamp');
+  currentMessagesListener.on('child_added', (snap) => {
+    const msg = snap.val();
+    if(!msg) return;
+    
+    const isSent = msg.sender === currentUid;
+    const div = document.createElement('div');
+    div.className = `message ${isSent ? 'sent' : 'received'}`;
+    div.innerHTML = `<div class="message-bubble">${escapeHtml(msg.text)}<div class="message-meta">${msg.timeStr || ''}</div></div>`;
+    
+    if(container.innerHTML === '<div style="text-align:center;padding:20px;">Loading messages...</div>') {
+      container.innerHTML = '';
+    }
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  });
+  
+  // If no messages yet, clear loading
+  setTimeout(() => {
+    if(container.innerHTML === '<div style="text-align:center;padding:20px;">Loading messages...</div>') {
+      container.innerHTML = '<div style="text-align:center;padding:20px;color:#8696a0;">No messages yet. Send a message!</div>';
+    }
+  }, 1000);
+}
+
+function sendMessage() {
+  const input = document.getElementById('chatMessageInput');
+  const text = input.value.trim();
+  if(!text || !currentUid || !currentChatId || !currentChatUser) return;
+  
+  const timeStr = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  const timestamp = firebase.database.ServerValue.TIMESTAMP;
+  
+  db.ref('chats/'+currentChatId+'/messages').push({
+    text, 
+    sender: currentUid, 
+    timeStr, 
+    timestamp
+  });
+  
+  db.ref('chats/'+currentChatId).update({ 
+    lastMessage: text, 
+    lastTime: timeStr 
+  });
+  
+  input.value = '';
+  input.style.height = 'auto';
 }
 
 function renderProfile() {
   const container = document.getElementById('profileContainer');
-  if(!container) return;
+  if(!container || !currentUser) return;
   container.innerHTML = `
     <div class="profile-section" style="padding: 30px 20px;">
-      <div class="profile-avatar" id="profileAvatar">${currentUser?.avatar || '👤'}</div>
-      <div class="profile-name" id="profileName">${currentUser?.name || 'User'}</div>
-      <div class="profile-about" id="profileAbout">${currentUser?.about || 'Hey there! I am using JUSTUS.'}</div>
+      <div class="profile-avatar" id="profileAvatar">${currentUser.avatar || currentUser.name?.charAt(0).toUpperCase() || '👤'}</div>
+      <div class="profile-name" id="profileName">${escapeHtml(currentUser.name || 'User')}</div>
+      <div class="profile-about" id="profileAbout">${escapeHtml(currentUser.about || 'Hey there! I am using JUSTUS.')}</div>
     </div>
     <div class="settings-item" id="editProfileBtn"><span>✏️</span><span>Edit Profile</span></div>
     <div class="settings-item" id="accountSettingsBtn"><span>🔒</span><span>Account</span></div>
@@ -982,113 +1133,111 @@ function showView(viewName) {
   });
   document.getElementById(viewName).style.display = 'flex';
   
-  // Update nav active state
   document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
   const navMap = { chatsView: 'chats', groupsView: 'groups', favoritesView: 'favorites', statusView: 'status', profileView: 'profile' };
   const activeNav = document.querySelector(`.nav-item[data-nav="${navMap[viewName]}"]`);
   if(activeNav) activeNav.classList.add('active');
 }
 
-function openChat(chatId, name, avatar) {
-  document.getElementById('mainApp').style.display = 'none';
-  document.getElementById('chatView').style.display = 'flex';
-  document.getElementById('chatViewName').textContent = name;
-  document.getElementById('chatViewAvatar').textContent = avatar;
-  currentChatId = chatId;
-  currentChatUser = { name, avatar };
-  
-  // Load messages
-  const container = document.getElementById('chatMessagesContainer');
-  container.innerHTML = '';
-  
-  // Add sample messages for demo
-  const sampleMessages = [
-    { text: 'Hey! Are we still meeting today?', sender: 'other', time: '12:30' },
-    { text: 'Yes, see you at 3pm', sender: 'me', time: '12:31' },
-    { text: 'Perfect! See you then.', sender: 'other', time: '12:32' }
-  ];
-  sampleMessages.forEach(msg => {
-    const div = document.createElement('div');
-    div.className = `message ${msg.sender === 'me' ? 'sent' : 'received'}`;
-    div.innerHTML = `<div class="message-bubble">${escapeHtml(msg.text)}<div class="message-meta">${msg.time}</div></div>`;
-    container.appendChild(div);
-  });
-  container.scrollTop = container.scrollHeight;
-}
-
-function sendMessage() {
-  const input = document.getElementById('chatMessageInput');
-  const text = input.value.trim();
-  if(!text) return;
-  
-  const container = document.getElementById('chatMessagesContainer');
-  const div = document.createElement('div');
-  div.className = 'message sent';
-  div.innerHTML = `<div class="message-bubble">${escapeHtml(text)}<div class="message-meta">${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div></div>`;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-  input.value = '';
-  input.style.height = 'auto';
-}
-
-// Authentication
-auth.onAuthStateChanged(async user => {
-  if(user) {
-    currentUid = user.uid;
-    const snap = await db.ref('users/'+currentUid).once('value');
-    let profile = snap.val();
-    if(!profile) {
-      const email = auth.currentUser.email;
-      const username = email.replace('@justus.app', '');
-      profile = { username, name: username, avatar: username.charAt(0).toUpperCase(), about: 'Hey there! I am using JUSTUS.', online: true };
-      await db.ref('users/'+currentUid).set(profile);
-    }
-    currentUser = profile;
-    document.getElementById('loginScreen').classList.remove('show');
-    document.getElementById('mainApp').style.display = 'flex';
-    document.getElementById('profileName').textContent = profile.name;
-    document.getElementById('profileAvatar').textContent = profile.avatar || profile.name?.charAt(0).toUpperCase() || '👤';
-    renderChatList(sampleChats, 'chatListContainer');
-    renderGroups();
-    renderFavorites();
-    renderProfile();
-    loadStatuses();
-    showView('chatsView');
-    
-    db.ref('users/'+currentUid+'/online').set(true);
-    db.ref('users/'+currentUid+'/online').onDisconnect().set(false);
-  } else {
-    document.getElementById('loginScreen').classList.add('show');
-    document.getElementById('mainApp').style.display = 'none';
-    document.getElementById('chatView').style.display = 'none';
-  }
-});
-
+// Authentication Functions
 async function signupUser(name, username, password) {
   if(!name.trim()) return 'Please enter your name';
-  if(!username.trim() || username.length<3) return 'Username must be at least 3 characters';
-  if(!password || password.length<6) return 'Password must be at least 6 characters';
-  const usernameSnap = await db.ref('usernames/'+username.toLowerCase()).once('value');
+  if(!username.trim() || username.length < 3) return 'Username must be at least 3 characters';
+  if(!password || password.length < 6) return 'Password must be at least 6 characters';
+  
+  const usernameSnap = await db.ref('usernames/' + username.toLowerCase()).once('value');
   if(usernameSnap.exists()) return 'Username already taken';
+  
   try {
-    const cred = await auth.createUserWithEmailAndPassword(username.toLowerCase()+'@justus.app', password);
+    const cred = await auth.createUserWithEmailAndPassword(username.toLowerCase() + '@justus.app', password);
     const uid = cred.user.uid;
-    await db.ref('users/'+uid).set({ username: username.toLowerCase(), name: name.trim(), avatar: name.charAt(0).toUpperCase(), about: 'Hey there! I am using JUSTUS.', online: true });
-    await db.ref('usernames/'+username.toLowerCase()).set(uid);
+    await db.ref('users/' + uid).set({
+      username: username.toLowerCase(),
+      name: name.trim(),
+      avatar: name.charAt(0).toUpperCase(),
+      about: 'Hey there! I am using JUSTUS.',
+      online: true,
+      createdAt: firebase.database.ServerValue.TIMESTAMP
+    });
+    await db.ref('usernames/' + username.toLowerCase()).set(uid);
     return null;
-  } catch(e) { return e.code === 'auth/email-already-in-use' ? 'Username already taken' : e.message; }
+  } catch(e) {
+    console.error(e);
+    return e.code === 'auth/email-already-in-use' ? 'Username already taken' : e.message;
+  }
 }
 
 async function loginUser(username, password) {
   try {
-    await auth.signInWithEmailAndPassword(username.toLowerCase()+'@justus.app', password);
+    await auth.signInWithEmailAndPassword(username.toLowerCase() + '@justus.app', password);
     return null;
-  } catch(e) { return 'Invalid username or password'; }
+  } catch(e) {
+    console.error(e);
+    return 'Invalid username or password';
+  }
 }
 
 function logoutUser() {
-  if(confirm('Log out?')) { if(currentUid) db.ref('users/'+currentUid+'/online').set(false); auth.signOut(); }
+  if(confirm('Log out?')) {
+    if(currentUid) db.ref('users/' + currentUid + '/online').set(false);
+    auth.signOut();
+  }
 }
+
+// Firebase Auth State Listener
+auth.onAuthStateChanged(async (user) => {
+  console.log("Auth state changed:", user ? "Logged in" : "Logged out");
+  
+  if(user) {
+    currentUid = user.uid;
+    console.log("User UID:", currentUid);
+    
+    // Load user profile
+    const snap = await db.ref('users/' + currentUid).once('value');
+    let profile = snap.val();
+    
+    if(!profile) {
+      // Create profile if doesn't exist
+      const email = auth.currentUser.email;
+      const username = email.replace('@justus.app', '');
+      profile = {
+        username: username,
+        name: username,
+        avatar: username.charAt(0).toUpperCase(),
+        about: 'Hey there! I am using JUSTUS.',
+        online: true,
+        createdAt: firebase.database.ServerValue.TIMESTAMP
+      };
+      await db.ref('users/' + currentUid).set(profile);
+    }
+    
+    currentUser = profile;
+    console.log("Current user:", currentUser);
+    
+    // Update UI
+    document.getElementById('loginScreen').classList.add('hide');
+    document.getElementById('mainApp').style.display = 'flex';
+    document.getElementById('chatView').style.display = 'none';
+    
+    // Load data
+    renderProfile();
+    loadUserChats();
+    loadStatuses();
+    showView('chatsView');
+    
+    // Set online status
+    db.ref('users/' + currentUid + '/online').set(true);
+    db.ref('users/' + currentUid + '/online').onDisconnect().set(false);
+    
+  } else {
+    console.log("No user logged in");
+    document.getElementById('loginScreen').classList.remove('hide');
+    document.getElementById('mainApp').style.display = 'none';
+    document.getElementById('chatView').style.display = 'none';
+    currentUid = null;
+    currentUser = null;
+  }
+});
 
 // Event Listeners
 document.getElementById('loginTab')?.addEventListener('click', () => {
@@ -1097,32 +1246,47 @@ document.getElementById('loginTab')?.addEventListener('click', () => {
   document.getElementById('loginForm').style.display = 'block';
   document.getElementById('signupForm').style.display = 'none';
 });
+
 document.getElementById('signupTab')?.addEventListener('click', () => {
   document.getElementById('signupTab').classList.add('active');
   document.getElementById('loginTab').classList.remove('active');
   document.getElementById('signupForm').style.display = 'block';
   document.getElementById('loginForm').style.display = 'none';
 });
+
 document.getElementById('doLoginBtn')?.addEventListener('click', async () => {
   const u = document.getElementById('loginUsername').value.trim();
   const p = document.getElementById('loginPassword').value;
-  if(!u||!p) { document.getElementById('loginError').textContent = 'Please enter username and password'; return; }
+  if(!u || !p) {
+    document.getElementById('loginError').textContent = 'Please enter username and password';
+    return;
+  }
   document.getElementById('doLoginBtn').textContent = 'Logging in...';
-  const err = await loginUser(u,p);
+  const err = await loginUser(u, p);
   document.getElementById('doLoginBtn').textContent = 'Log In';
-  if(err) document.getElementById('loginError').textContent = err;
-  else document.getElementById('loginError').textContent = '';
+  if(err) {
+    document.getElementById('loginError').textContent = err;
+  } else {
+    document.getElementById('loginError').textContent = '';
+  }
 });
+
 document.getElementById('doSignupBtn')?.addEventListener('click', async () => {
   const n = document.getElementById('signupName').value;
   const u = document.getElementById('signupUsername').value.trim().toLowerCase();
   const p = document.getElementById('signupPassword').value;
-  if(!n||!u||!p) { document.getElementById('signupError').textContent = 'Please fill all fields'; return; }
+  if(!n || !u || !p) {
+    document.getElementById('signupError').textContent = 'Please fill all fields';
+    return;
+  }
   document.getElementById('doSignupBtn').textContent = 'Creating...';
-  const err = await signupUser(n,u,p);
+  const err = await signupUser(n, u, p);
   document.getElementById('doSignupBtn').textContent = 'Create Account';
-  if(err) document.getElementById('signupError').textContent = err;
-  else document.getElementById('signupError').textContent = '';
+  if(err) {
+    document.getElementById('signupError').textContent = err;
+  } else {
+    document.getElementById('signupError').textContent = '';
+  }
 });
 
 // Navigation
@@ -1130,7 +1294,12 @@ document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     const nav = item.dataset.nav;
     const viewMap = { chats: 'chatsView', groups: 'groupsView', favorites: 'favoritesView', status: 'statusView', profile: 'profileView' };
-    showView(viewMap[nav]);
+    if(viewMap[nav]) {
+      showView(viewMap[nav]);
+      if(nav === 'groups') loadUserChats();
+      if(nav === 'favorites') loadUserChats();
+      if(nav === 'status') loadStatuses();
+    }
   });
 });
 
@@ -1138,27 +1307,32 @@ document.getElementById('logoutBtnNav')?.addEventListener('click', logoutUser);
 document.getElementById('closeChatBtn')?.addEventListener('click', () => {
   document.getElementById('mainApp').style.display = 'flex';
   document.getElementById('chatView').style.display = 'none';
-  if(currentMessagesListener) currentMessagesListener.off();
+  if(currentMessagesListener) {
+    currentMessagesListener.off();
+    currentMessagesListener = null;
+  }
 });
 document.getElementById('chatSendBtn')?.addEventListener('click', sendMessage);
-document.getElementById('chatMessageInput')?.addEventListener('keypress', e => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+document.getElementById('chatMessageInput')?.addEventListener('keypress', (e) => {
+  if(e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
 
 // New chat modal
 const newChatModal = document.getElementById('newChatModal');
 const newChatOverlay = document.getElementById('newChatOverlay');
-document.getElementById('newChatBtn')?.addEventListener('click', () => {
+document.getElementById('newChatBtn')?.addEventListener('click', async () => {
+  await loadAllUsers();
   newChatModal.style.transform = 'translateY(0)';
   newChatOverlay.classList.add('show');
-  // Load users
-  const usersList = document.getElementById('usersListForNewChat');
-  usersList.innerHTML = sampleChats.filter(c => !c.group).map(c => `
-    <div class="chat-item" data-name="${c.name}" data-avatar="${c.avatar}">
-      <div class="chat-avatar" style="width: 45px; height: 45px;">${c.avatar}</div>
-      <div class="chat-info"><div class="chat-name">${c.name}</div></div>
-    </div>
-  `).join('');
 });
 document.getElementById('closeNewChatModal')?.addEventListener('click', () => {
+  newChatModal.style.transform = 'translateY(100%)';
+  newChatOverlay.classList.remove('show');
+});
+newChatOverlay?.addEventListener('click', () => {
   newChatModal.style.transform = 'translateY(100%)';
   newChatOverlay.classList.remove('show');
 });
@@ -1182,15 +1356,19 @@ document.getElementById('postStatusBtn')?.addEventListener('click', () => {
       name: currentUser.name,
       text: text,
       time: time,
-      avatar: currentUser.avatar,
+      avatar: currentUser.avatar || currentUser.name?.charAt(0).toUpperCase() || '👤',
       uid: currentUid,
       timestamp: firebase.database.ServerValue.TIMESTAMP
     });
-    alert('Status posted!');
     statusModal.classList.remove('open');
     statusOverlay.classList.remove('show');
     document.getElementById('statusTextInput').value = '';
+    alert('Status posted!');
   }
+});
+statusOverlay?.addEventListener('click', () => {
+  statusModal.classList.remove('open');
+  statusOverlay.classList.remove('show');
 });
 
 // Mobile menu toggle
@@ -1216,11 +1394,11 @@ document.addEventListener('click', (e) => {
 // Auto-resize textarea
 const msgInput = document.getElementById('chatMessageInput');
 if(msgInput) {
-  msgInput.addEventListener('input', function() { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 100) + 'px'; });
+  msgInput.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+  });
 }
-
-// Initial render
-renderChatList(sampleChats, 'chatListContainer');
 </script>
 </body>
 </html>
